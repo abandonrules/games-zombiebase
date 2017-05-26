@@ -3,7 +3,12 @@ App.services.factory('PlayerService', ['AirConsoleService', function (AirConsole
     ctrl: {},
     screen: {},
     players: [],
-    players_map: {}
+    players_map: {},
+    device_player: null
+  };
+
+  var Event = {
+    PlayerUpdate: 'on_update_player'
   };
 
   // ======================================================
@@ -29,8 +34,25 @@ App.services.factory('PlayerService', ['AirConsoleService', function (AirConsole
 
       var player_map_key = 'player_map_key';
 
-      service.updatePlayersMap = function() {
-        airconsole.setCustomDeviceStateProperty(player_map_key, this.players_map);
+      service.updatePlayersMap = function(no_broadcast) {
+        var formated_map = {};
+        for (var device_id in this.players_map) {
+          var player = this.players_map[device_id];
+          formated_map[device_id] = {
+            device_id: device_id,
+            color: player.color,
+            stats: player.stats,
+            team_index: player.team_index,
+            name: player.name,
+            img: player.img,
+            current_view: player.current_view,
+            class_type: player.class_type,
+            move: player.move
+          }
+        };
+        if (!no_broadcast) {
+          airconsole.setCustomDeviceStateProperty(player_map_key, formated_map);
+        }
       };
       service.updatePlayersMap();
 
@@ -43,14 +65,19 @@ App.services.factory('PlayerService', ['AirConsoleService', function (AirConsole
           stats: {},
           team_index: null,
           name: airconsole.getNickname(device_id),
-          img: airconsole.getProfilePicture(device_id)
+          img: airconsole.getProfilePicture(device_id),
+          current_view: null,
+          class_type: 'EngineerUnit',
+          move: {
+            left: false,
+            right: false
+          },
+          unit: null,
+          default_unit: null
         };
         this.players.push(player);
         this.players_map[device_id] = player;
         this.updatePlayersMap();
-        // airconsole.sendEvent(device_id, AirConsoleService.Event.SetPlayer, {
-        //   color: color
-        // });
       };
 
       service.removePlayer = function(device_id) {
@@ -82,10 +109,23 @@ App.services.factory('PlayerService', ['AirConsoleService', function (AirConsole
         service.addPlayer(device_id);
       });
 
+      airconsole.on(Event.PlayerUpdate, function(device_id, params) {
+        var player = service.players_map[device_id];
+        if (player) {
+          _.merge(player, params);
+        }
+      });
+
     // ======================================================
     // CTRL
     // ======================================================
     } else {
+
+      service.updatePlayerProperty = function(key, value) {
+        var data = {};
+        data[key] = value;
+        airconsole.sendEvent(AirConsole.SCREEN, Event.PlayerUpdate, data);
+      };
 
     }
 

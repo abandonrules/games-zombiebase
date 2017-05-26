@@ -5,6 +5,7 @@
  *  sprite_key
  *  init_health
  *  bullet_kill_distance
+ *  kill_countdown_rate
  *  fire_limit
  *  fire_rate
  *  move_speed
@@ -24,6 +25,7 @@ Unit = function (index, game, opts) {
 
   Phaser.Sprite.call(this, game, x, y, opts.sprite_key || 'player');
   this.unit_type = 'Unit';
+  this.name = "Unit";
 
   this.anchor.setTo(0.5, 0.5);
   game.physics.enable(this, Phaser.Physics.ARCADE);
@@ -53,9 +55,11 @@ Unit = function (index, game, opts) {
   this.kill_timeout = null;
   this.seconds_until_kill = null;
   this.kill_start_seconds = opts.kill_countdown || UNIT_SPECS.KILL_COUTDOWN.MEDIUM;
+  this.kill_countdown_rate = opts.kill_countdown_rate || UNIT_SPECS.KILL_COUTDOWN_RATE.MEDIUM;
 
   this.inventory = [];
   this.max_inventory = 2;
+  this.collectable_items = ['item_ammo'];
 
   this.track_colliding_obj = null;
 
@@ -75,7 +79,7 @@ Unit.prototype = Object.create(Phaser.Sprite.prototype);
 Unit.prototype.constructor = Unit;
 
 Unit.prototype.update = function() {
-  this.text1.alignTo(this, Phaser.CENTER_TOP, 16);
+  this.text1.alignTo(this, Phaser.TOP_CENTER);
   this.game.physics.arcade.velocityFromAngle(this.angle, this.move_velocity, this.body.velocity);
 
   // Check if still touching tracking object
@@ -114,7 +118,7 @@ Unit.prototype.killCountdown = function() {
   } else if (this.seconds_until_kill <= 0) {
     this.killUnit();
   } else {
-    var next_call = direction === 1 ? this.track_colliding_obj.data.heal_rate : Phaser.Timer.SECOND * 1;
+    var next_call = direction === 1 ? this.track_colliding_obj.data.heal_rate : this.kill_countdown_rate;
     this.text1.text = this.player_name + " (" + (this.seconds_until_kill) + ")";
     this.kill_timeout = this.game.time.events.add(next_call, this.killCountdown, this);
   }
@@ -160,8 +164,8 @@ Unit.prototype.onHit = function(obj) {
     this.setInjured();
   } else if (!this.kill_timeout) {
     this.damage(1);
+    this.update_device_signal.dispatch(this.device_id);
   }
-  this.update_device_signal.dispatch();
 };
 
 Unit.prototype.onMove = function(data) {
@@ -189,18 +193,31 @@ Unit.prototype.getShotsLeft = function(data) {
 Unit.prototype.onVehicleJoin = function(vehicle) {
   this.alive = false;
   this.visible = false;
+  this.exists = false;
+  this.body.angularVelocity = 0;
   this.move_velocity = 0;
   this.body.immovable = true;
 };
 
 Unit.prototype.onVehicleLeave = function(vehicle) {
-  this.alive = true;
+  var self = this;
+  var angle = Phaser.Math.angleBetween(vehicle.centerX, vehicle.centerY, this.x, this.y);
+  var diagonal = Phaser.Math.distance(vehicle.centerX, vehicle.centerY, vehicle.x, vehicle.y);
+  var distance = this.radius + diagonal + 4;
   this.visible = true;
-  this.body.immovable = false;
+  this.x = vehicle.centerX + Math.cos(angle) * distance;
+  this.y = vehicle.centerY + Math.sin(angle) * distance;
+  this.rotation = angle;
+  // yeah - otherwise it will trigger onCollide again
+  this.game.time.events.add(Phaser.Timer.SECOND * 0.5, function() {
+    this.exists = true;
+    this.alive = true;
+    this.body.immovable = false;
+  }, this);
 };
 
 Unit.prototype.canCollect = function(item) {
-  return this.max_inventory >= this.inventory.length;
+  return this.max_inventory >= this.inventory.length && this.collectable_items.indexOf(item.name) > -1;
 };
 
 Unit.prototype.collectItem = function(item) {
@@ -219,4 +236,3 @@ Unit.prototype.toCustomData = function() {
     ammo: this.getShotsLeft()
   };
 };
-
