@@ -53,3 +53,10 @@
 }
 
 
+.btn_select_class_type {
+  width: 25%;
+}
+
+.btn_select_class_type.active {
+  color: #ffeb3b;
+}

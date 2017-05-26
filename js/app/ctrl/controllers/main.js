@@ -1,9 +1,11 @@
-App.controllers.controller('MainCtrl', ['$scope', '$location', '$http', 'AirConsoleService', 'ViewService', function ($scope, $location, $http, AirConsoleService, ViewService) {
+App.controllers.controller('MainCtrl', ['$scope', '$location', '$http', 'AirConsoleService', 'ViewService', 'PlayerService', function ($scope, $location, $http, AirConsoleService, ViewService, PlayerService) {
 
   $scope.airconsole = null;
   $scope.player = {
     device_id: null,
-    is_master: false
+    is_master: false,
+    stats: {},
+    unit: {}
   };
 
   var setMasterPlayer = function() {
@@ -22,6 +24,7 @@ App.controllers.controller('MainCtrl', ['$scope', '$location', '$http', 'AirCons
 
   $scope.init = function() {
     $scope.airconsole = AirConsoleService.airconsole;
+    PlayerService.init();
 
     $scope.airconsole.onReady = function() {
       initPlayer();

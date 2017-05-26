@@ -3,10 +3,19 @@ var PhaserGame = {
   mode: null,
   airconsole: null,
   teams: null,
+  player_map: {},
   phaser: null,
   map: null,
   layer: null,
   groups: {},
+  //
+  async_path: null,
+  //
+  end_countdown_init: 20,
+  end_countdown: 20,
+  end_timeout: null,
+  //
+  enemy_handler: null,
 
   init: function(airconsole, teams, mode) {
     this.airconsole = airconsole;
@@ -32,12 +41,15 @@ var PhaserGame = {
       'tower',
       'tower_canon',
       'door_h',
+      'heli',
       'helicopter_landing',
       'player',
       'enemy',
       'bullet',
+      'bullet_big',
       'item_ammo',
-      'waypoint'
+      'waypoint',
+      'generator'
     ];
     for (var i = 0; i < images.length; i++) {
       var file = images[i];
@@ -55,11 +67,15 @@ var PhaserGame = {
     this.map.addTilesetImage('tower');
     this.map.addTilesetImage('item_ammo');
     this.map.addTilesetImage('waypoint');
-    //this.map.addTilesetImage('door_h');
+    this.map.addTilesetImage('generator');
     this.map.addTilesetImage('helicopter_landing');
 
     this.layer = this.map.createLayer('World');
     this.layer.resizeWorld();
+
+    this.async_path = this.phaser.plugins.add(Phaser.Plugin.asyncPath);
+    this.async_path.tileMap = this.map;
+    this.async_path.nonWalkableLayer = 'World';
 
     // Build Groups
     this.addWaypointGroup();
@@ -68,7 +84,8 @@ var PhaserGame = {
     this.addEnemyGroup();
     this.addItemGroup();
     this.buildPlayers();
-
+    this.addHelicopter();
+    this.startCountdown();
     this.map.setCollision([1, 2, 3, 4]);
 
     // Scale
@@ -97,16 +114,25 @@ var PhaserGame = {
     this.groups['waypoint'] = group;
   },
 
+  addHelicopter: function() {
+    var group = this.phaser.add.group();
+    group.classType = Helicopter;
+    var heli = new Helicopter(this.phaser, {
+      x: this.map.widthInPixels / 2 - 64,
+      y: this.map.heightInPixels + 64,
+    });
+    group.add(heli);
+    this.groups['heli'] = group;
+  },
+
   addItemGroup: function() {
     var group = this.phaser.add.group();
     group.classType = Item;
     group.enableBody = true;
     // name, gid, key, frame, exists, autoCull, group, CustomClass, adjustY
-    this.map.createFromObjects('Object Layer 1', 4, 'item_ammo', 0, false, false, group, Item);
+    this.map.createFromObjects('Object Layer 1', 4, 'item_ammo', 0, true, false, group, Item);
+    this.map.createFromObjects('Object Layer 1', 6, 'generator', 0, true, false, group, GeneratorItem);
     this.groups['item'] = group;
-
-    var item = group.getRandom();
-    item.exists = true;
   },
 
   addTowerGroup: function() {
@@ -128,12 +154,29 @@ var PhaserGame = {
 
   addEnemyGroup: function() {
     var group = this.phaser.add.group();
-    group.classType = HelicopterLanding;
+    group.classType = Enemy;
     group.enableBody = true;
-    for (var i = 0; i < 4; i++) {
-      group.add(new Enemy(i, this.phaser));
-    }
     this.groups['enemy'] = group;
+    this.enemy_handler = new EnemyHandler(this.phaser, this.groups, this.async_path);
+    //
+    var main_target = this.groups['helicopter_landing'].children[0];
+    for (var i = 0; i < 6; i++) {
+      this.enemy_handler.createEnemy(main_target);
+    }
+  },
+
+  // =====================================================================================
+  // MECHANICS
+  // =====================================================================================
+  startCountdown: function() {
+    this.end_countdown -= 1;
+    if (this.end_countdown <= 0) {
+      var heli = this.groups['heli'].children[0];
+      var start_base = this.groups['helicopter_landing'].children[0];
+      heli.setTarget(start_base);
+    } else {
+      this.end_timeout = this.phaser.time.events.add(Phaser.Timer.SECOND * 1, this.startCountdown, this);
+    }
   },
 
   // =====================================================================================
@@ -146,31 +189,53 @@ var PhaserGame = {
     var enemies_group = this.groups['enemy'];
     var towers_group = this.groups['tower'];
     var items_group = this.groups['item'];
-    var waypoints_group = this.groups['waypoint'];
+    var heli_landing_group = this.groups['helicopter_landing'];
+    var heli_group = this.groups['heli'];
+
+    var collide = this.phaser.physics.arcade.collide.bind(this.phaser.physics.arcade);
+    var overlap = this.phaser.physics.arcade.overlap.bind(this.phaser.physics.arcade);
+
+    // Helicopter
+    overlap(heli_landing_group, heli_group, function(heli_landing, heli) {
+      var distance = self.phaser.physics.arcade.distanceBetween(heli_landing, heli);
+      if (heli_landing.canHeliLand() && heli.target_obj && distance < 4 && heli.isFlying()) {
+        heli.setTarget(null);
+        heli.landOnObj(heli_landing);
+      }
+    });
+
+    overlap(heli_group, units_group, function(heli, unit) {
+      if (heli.isLanded() && unit.alive && unit.visible) {
+        var player = self.getPlayerByDeviceId(unit.device_id);
+        unit.onVehicleJoin(heli);
+        heli.onUnitJoin(unit);
+        player.unit = heli;
+      }
+    });
 
     // Units collision
-    this.phaser.physics.arcade.collide(units_group, this.layer);
-    this.phaser.physics.arcade.collide(units_group, units_group, function(unit, other_unit) {
+    collide(units_group, this.layer);
+    collide(units_group, units_group, function(unit, other_unit) {
       if (unit.visible && other_unit.visible) {
         other_unit.collidesWithUnit(unit);
         unit.collidesWithUnit(other_unit);
       }
     });
-    this.phaser.physics.arcade.collide(units_group, enemies_group, function(unit, enemy) {
+    collide(units_group, enemies_group, function(unit, enemy) {
       if (unit.visible) {
         enemy.attack(unit);
       }
     });
-    this.phaser.physics.arcade.collide(units_group, towers_group, function(unit, tower) {
-      if (tower.canUnitJoin()) {
-        var player = self.getPlayerByDeviceId(unit.device_id);
+    collide(units_group, towers_group, function(unit, tower) {
+      if (tower.canUnitJoin() && unit.alive) {
+        var player = self.player_map[unit.device_id];
         unit.onVehicleJoin(tower);
         tower.addUnit(unit);
         player.unit = tower;
       }
     });
 
-    this.phaser.physics.arcade.collide(units_group, items_group, function(unit, item) {
+    collide(units_group, items_group, function(unit, item) {
       if (unit.canCollect(item)) {
         unit.collectItem(item);
         item.kill();
@@ -181,18 +246,20 @@ var PhaserGame = {
     units_group.forEach(function(unit) {
       var bullets = unit.weapon.bullets;
 
-      this.phaser.physics.arcade.collide(bullets, this.layer, function(bullet, obj) {
+      collide(bullets, this.layer, function(bullet, obj) {
         bullet.kill();
       });
 
-      this.phaser.physics.arcade.collide(bullets, enemies_group, function(bullet, obj) {
+      collide(bullets, enemies_group, function(bullet, obj) {
         if (obj.alive) {
+          if (obj.onHit(bullet)) {
+            self.increasePlayerStats(unit.device_id, 'enemy_kills');
+          }
           bullet.kill();
-          obj.onHit(bullet);
         }
       });
 
-      this.phaser.physics.arcade.collide(bullets, units_group, function(bullet, other_unit) {
+      collide(bullets, units_group, function(bullet, other_unit) {
         if (other_unit.alive) {
           other_unit.onHit(bullet);
           bullet.kill();
@@ -203,13 +270,13 @@ var PhaserGame = {
     // Tower Bullets
     towers_group.forEach(function(tower) {
       var bullets = tower.weapon.bullets;
-      this.phaser.physics.arcade.collide(bullets, enemies_group, function(bullet, obj) {
+      collide(bullets, enemies_group, function(bullet, obj) {
         if (obj.alive) {
           bullet.kill();
           obj.onHit(bullet);
         }
       });
-      this.phaser.physics.arcade.collide(bullets, units_group, function(bullet, obj) {
+      collide(bullets, units_group, function(bullet, obj) {
         if (obj.alive) {
           bullet.kill();
           obj.onHit(bullet);
@@ -218,46 +285,13 @@ var PhaserGame = {
     }, this);
 
     // Enemies
-    this.phaser.physics.arcade.collide(enemies_group, enemies_group);
-    this.phaser.physics.arcade.collide(enemies_group, this.layer);
-
-    this.phaser.physics.arcade.collide(enemies_group, waypoints_group, function(enemy, wp) {
-      // if (enemy.target_obj === wp) {
-      //   enemy.visited_waypoints.push(wp);
-      // }
-    });
-    // Enemy view radius
-    enemies_group.forEach(function(enemy) {
-      var main_target = this.groups['helicopter_landing'].children[0];
-      units_group.forEach(function(unit) {
-        if (unit.alive && unit.visible && enemy.alive) {
-          var distance = Phaser.Math.distance(unit.x, unit.y, enemy.x, enemy.y);
-          if (distance < enemy.view_radius &&
-            ((enemy.target_obj && enemy.target_obj.device_id !== unit.device_id) || !enemy.target_obj )) {
-            enemy.moveTo(unit);
-          }
-          if (distance > enemy.view_radius * 2 &&
-              (enemy.target_obj && enemy.target_obj.device_id === unit.device_id)) {
-            enemy.moveTo(main_target);
-          }
-        }
-      }, this);
-
-      // Move to main object if it has no target
-      if (!enemy.target_obj) {
-        var closest_wp = waypoints_group.getClosestTo(enemy, function(wp, distance) {
-
-        });
-        if (!closest_wp) {
-          closest_wp = main_target;
-        }
-        enemy.moveTo(closest_wp);
-      }
-    }, this);
+    this.enemy_handler.update(enemies_group, this.groups, this.layer);
   },
 
   render: function () {
-
+    if (this.groups['unit'] && this.groups['unit'].children) {
+      // this.phaser.debug.body(this.groups['unit'].children[0]);
+    }
   },
 
   // =====================================================================================
@@ -279,24 +313,36 @@ var PhaserGame = {
 
   buildPlayers: function() {
     var teams = this.teams;
-    //this.objects['unit'] = [];
     var group = this.phaser.add.group();
-    for (var i = 0; i < this.teams.length; i++) {
-      var start_base = this.groups['waypoint'].children[i];
-      var players = this.teams[i].players;
+    //
+    var start_base = this.groups['waypoint'].children[0];
+    var angle = 0;
+    var start_margin = 32;
+    //
+    for (var i = 0; i < teams.length; i++) {
+      var players = teams[i].players;
+      var angle_step = (Math.PI * 2) / players.length;
       for (var p = 0; p < players.length; p++) {
         var player = players[p];
+        var start_x = start_base.centerX + Math.cos(angle_step * p) * start_margin;
+        var start_y = start_base.centerY + Math.sin(angle_step * p) * start_margin;
         var opts = {
           device_id: player.device_id,
           color: player.color,
           label: player.name,
-          x: start_base.x + 16 * p,
-          y: start_base.y + 16 * p
+          x: start_x,
+          y: start_y
         };
         var unit = new window[player.class_type](p, this.phaser, opts);
+
+        var start_rotation = this.phaser.physics.arcade.angleToXY(unit, start_base.centerX, start_base.centerY);
+        unit.rotation = Phaser.Math.reverseAngle(start_rotation);
+
         player.unit = unit;
         player.default_unit = unit;
         group.add(unit);
+        this.player_map[player.device_id] = player;
+        this.updateCustomDeviceData(player.device_id);
         unit.update_device_signal.add(this.updateCustomDeviceData, this);
       }
     }
@@ -317,34 +363,42 @@ var PhaserGame = {
         player.unit.onShoot();
       }
       if (params.action === "exit_vehicle") {
-        if (player.unit.onUnitLeave) {
-          player.unit.onUnitLeave(player.device_id);
+        var vehicle = player.unit;
+        if (vehicle && vehicle.onUnitLeave) {
+          vehicle.onUnitLeave(player.device_id);
           player.unit = player.default_unit;
-          player.unit.onVehicleLeave();
+          player.unit.onVehicleLeave(vehicle);
         }
       }
     }
   },
 
-  updateCustomDeviceData: function(unit) {
+  updateCustomDeviceData: function(device_id) {
     var custom_data = {};
-    for (var i = 0; i < this.teams.length; i++) {
-      var players = this.teams[i].players;
-      for (var p = 0; p < players.length; p++) {
-        var player = players[p];
-        var unit = player.default_unit;
-        var opts = {
-          name: player.name,
-          color: player.color,
-          current_view: player.current_view,
-          class_type: player.class_type,
-          stats: player.stats,
-          unit: unit.toCustomData()
-        };
-        custom_data[player.device_id] = opts;
-      }
-    }
-    this.airconsole.setCustomDeviceStateProperty('players', custom_data);
+    var player = this.player_map[device_id];
+    var unit = player.default_unit;
+    var opts = {
+      //name: player.name,
+      //color: player.color,
+      current_view: player.current_view,
+      //class_type: player.class_type,
+      stats: player.stats,
+      unit: unit.toCustomData()
+    };
+    //custom_data[device_id] = opts;
+    this.airconsole.sendEvent(device_id, 'on_update_player', opts);
+    //this.airconsole.setCustomDeviceStateProperty('players', custom_data);
   },
+
+  increasePlayerStats: function(device_id, key, step) {
+    var player = this.player_map[device_id];
+    var step = step || 1;
+    if (player) {
+      if (!player.stats[key]) {
+        player.stats[key] = 0;
+      }
+      player.stats[key] = player.stats[key] + step;
+    }
+  }
 
 };
